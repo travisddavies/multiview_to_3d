@@ -3,6 +3,8 @@ import torch.nn as nn
 import numpy as np
 import torch.functional as F
 from functools import partial
+import logging
+import os
 
 from .blocks import Bottleneck, BasicBlock
 
@@ -11,6 +13,7 @@ blocks_dict = {
     'BASIC': BasicBlock,
     'BOTTLENECK': Bottleneck
 }
+logger = logging.getLogger(__name__)
 
 """
     Something to research: what is this block.expansion value?
@@ -84,7 +87,7 @@ class PoseHighResolutionNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _make_transition_layer(
-        self, num_channels_pre_layer, num_channels_cur_layer):
+            self, num_channels_pre_layer, num_channels_cur_layer):
         num_branches_cur = len(num_channels_cur_layer)
         num_branches_pre = len(num_channels_pre_layer)
 
@@ -113,6 +116,10 @@ class PoseHighResolutionNet(nn.Module):
                 # then iterate from 0 to the equivalent of the difference
                 # between i and num_branches_pre
                 for j in range(i+1-num_branches_pre):
+                    # Note: the above for loop looks like a bug because it
+                    # seems to not iterate throught the channels that surpass
+                    # pre_stage_channels
+
                     # These are going to connect to the last block from the
                     # previous layer, so we will take the number of channels
                     # of that block as the inchannels
@@ -134,6 +141,116 @@ class PoseHighResolutionNet(nn.Module):
                         nn.ReLU(inplace=True)
                     )
                     conv3x3s.append(conv)
-                    transition_layers.append(nn.Sequential(*conv3x3s))
+                # Append the conv blocks to the end of the list
+                transition_layers.append(nn.Sequential(*conv3x3s))
 
         return nn.ModuleList(transition_layers)
+
+    def _make_stage(self, layer_config, num_inchannels,
+                    multi_scale_output=True):
+        num_modules = layer_config['NUM_MODULES']
+        num_branches = layer_config['NUM_BRANCHES']
+        num_blocks = layer_config['NUM_CHANNELS']
+        num_channels = layer_config['BLOCK']
+        block = layer_config['BLOCK']
+        fuse_method = layer_config['FUSE_METHOD']
+
+        modules = []
+        for i in range(num_modules):
+            # multi_scale_output is only used module
+            if not multi_scale_output and i == num_modules - 1:
+                reset_multi_scale_output = False
+            else:
+                reset_multi_scale_output = True
+
+            modules.append(
+                HighResolutionModule(
+                    num_branches,
+                    block,
+                    num_blocks,
+                    num_inchannels,
+                    num_channels,
+                    fuse_method,
+                    reset_multi_scale_output
+                )
+            )
+            num_inchannels = modules[-1].get_num_ichannels()
+
+        return nn.Sequential(*modules), num_inchannels
+
+
+class HighResolutionModule(nn.Module):
+    def __init__(self, num_branches, blocks, num_blocks, num_inchannels,
+                 num_channels, fuse_method, multi_scale_output=True):
+        super(HighResolutionModule, self).__init__()
+        self._check_branches(
+            num_branches, blocks, num_blocks, num_inchannels, num_channels
+        )
+        self.num_inchannels = num_inchannels
+        self.fuse_method = fuse_method
+        self.num_branches = num_branches
+
+        self.multi_scale_output = multi_scale_output
+
+        self.branches = self._make_branches(
+            num_branches, blocks, num_blocks, num_channels
+        )
+        self.fuse_layers = self._make_fuse_layers()
+        self.relu = nn.ReLU(True)
+
+    def _check_branches(self, num_branches, blocks, num_blocks,
+                        num_inchannels, num_channels):
+        if num_branches != len(num_blocks):
+            error_msg = 'NUM_BRANCHES({}) <> NUM_BLOCKS({})'.format(
+                num_branches, len(num_blocks)
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        if num_branches != len(num_channels):
+            error_msg = 'NUM_BRANCHES({}) <> NUM_CHANNELS({})'.format(
+                num_branches, len(num_channels)
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        if num_branches != len(num_inchannels):
+            error_msg = 'NUM_BRANCHES({}) <> NUM_INCHANNELS({})'.format(
+                num_branches, len(num_inchannels)
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+    def _make_one_branch(self, branch_index, block, num_blocks, num_channels,
+                         stride=1):
+        downsample = None
+        if stride != 1 or \
+           self.num_inchannels[branch_index] != num_channels[branch_index] * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(
+                    self.num_inchannels[branch_index],
+                    num_channels[branch_index] * block.expansion,
+                    kernel_size=1, stride=stride, bias=False
+                ),
+                nn.BatchNorm2d(
+                    num_channels[branch_index] * block.expansion,
+                    momentum=BN_MOMENTUM
+                ),
+            )
+        layers = []
+        layers.append(
+            self.num_inchannels[branch_index],
+            num_channels[branch_index],
+            stride,
+            downsample
+        )
+        self.num_inchannels[branch_index] = \
+            num_channels[branch_index] * block.expansion
+        for i in range(1, num_blocks[branch_index]):
+            layers.append(
+                block(
+                    self.num_inchannels[branch_index],
+                    num_channels[branch_index]
+                )
+            )
+        return nn.Sequential(*layers)
