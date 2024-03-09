@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 """
     Something to research: what is this block.expansion value?
+    Also, what is multi_scale_output?
 """
 
 
@@ -29,6 +30,7 @@ class PoseHighResolutionNet(nn.Module):
     def __init__(self, cfg, **kwargs):
         # the number of outchannels more or less
         self.inplanes = 64
+        extra = cfg.MODEL.EXTRA
         super(PoseHighResolutionNet, self).__init__()
         # our standard conv block and batch normalisation block
         conv = partial(nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1,
@@ -56,6 +58,50 @@ class PoseHighResolutionNet(nn.Module):
         self.stage3_cfg = cfg['MODEL']['EXTRA']['STAGE3']
         num_channels = self.stage3_cfg['NUM_CHANNELS']
         block = blocks_dict[self.stage3_cfg['BLOCK']]
+        num_channels = [
+            num_channels[i] * block.expansion for i in range(len(num_channels))
+        ]
+        self.transition2 = self._make_transition_layer(
+            pre_stage_channels, num_channels)
+        self.stage3, pre_stage_channels = self._make_stage(
+            self.stage3_cfg, num_channels
+        )
+
+        # Stage 4 of the model
+        self.stage4_cfg = cfg['MODEL']['EXTRA']['STAGE4']
+        num_channels = self.stage4_cfg['NUM_CHANNELS']
+        block = blocks_dict[self.stage4_cfg['BLOCK']]
+        num_channels = [
+            num_channels[i] * block.expansion for i in range(len(num_channels))
+        ]
+        self.transition3 = self._make_transition_layer(
+            pre_stage_channels, num_channels
+        )
+        self.stage4, pre_stage_channels = self._make_stage(
+            self.stage4_cfg, num_channels, multi_scale_output=True
+        )
+
+        #### modification to output keypoints and mask prediction ####
+        last_inp_channels = np.int(np.sum(pre_stage_channels))
+
+        self.final_layer = nn.Sequential(
+            nn.Conv2d(
+                in_channels=last_inp_channels,
+                out_channels=last_inp_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0
+            ),
+            nn.BatchNorm2d(last_inp_channels, momentum=BN_MOMENTUM),
+            nn.ReLU(inplace=False),
+            nn.Conv2d(
+                in_channels=last_inp_channels,
+                out_channels=cfg.MODEL.NUM_JOINTS,
+                kernel_size=extra.FINAL_CONV_KERNEL,
+                stride=1,
+                padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0
+            )
+        )
 
     def _make_first_layer(self, block, planes, blocks, stride=1):
         """
@@ -225,6 +271,7 @@ class HighResolutionModule(nn.Module):
     def _make_branches(self, num_branches, block, num_blocks, num_channels):
         branches = []
 
+        # set up the amount of branches specified
         for i in range(num_branches):
             branches.append(
                 self._make_one_branch(i, block, num_blocks, num_channels)
@@ -234,6 +281,8 @@ class HighResolutionModule(nn.Module):
 
     def _make_one_branch(self, branch_index, block, num_blocks, num_channels,
                          stride=1):
+        # If downsizing is present, then add this particular conv block to act
+        # as an residual conv block at the start
         if stride != 1 or \
            self.num_inchannels[branch_index] != num_channels[branch_index] * block.expansion:
             downsample = nn.Sequential(
@@ -260,6 +309,8 @@ class HighResolutionModule(nn.Module):
             )
         )
 
+        # add the next conv blocks according to the number of blocks for this
+        # branch
         self.num_inchannels[branch_index] = \
             num_channels[branch_index] * block.expansion
         for i in range(1, num_blocks[branch_index]):
@@ -279,10 +330,13 @@ class HighResolutionModule(nn.Module):
         num_branches = self.num_branches
         num_inchannels = self.num_inchannels
         fuse_layers = []
+
         for i in range(num_branches if self.multi_scale_output else 1):
             fuse_layer = []
             for j in range(num_branches):
                 if j > i:
+                    # make a bunch of upsampling conv blocks that connect to
+                    # various branches from the previous layer
                     block = nn.Sequential(
                         nn.Conv2d(
                             num_inchannels[j],
@@ -292,12 +346,17 @@ class HighResolutionModule(nn.Module):
                         nn.BatchNorm2d(num_inchannels[i]),
                         nn.Upsample(scale_factor=2**(j-i), mode='nearest')
                     )
+                    fuse_layer.append(block)
                 elif j == i:
                     fuse_layer.append(None)
                 else:
+                    # make a bunch of downsampling conv blocks for the other
+                    # branches from the previous layer
                     conv3x3s = []
                     for k in range(i-j):
                         if (k == i - j - 1):
+                            # If it's the final block of this loop, don't
+                            # include relu module
                             num_outchannels_conv3x3 = num_inchannels[i]
                             block = nn.Sequential(
                                 nn.Conv2d(
@@ -310,6 +369,8 @@ class HighResolutionModule(nn.Module):
                             )
                             conv3x3s.append(block)
                         else:
+                            # If it is not the last block of this loop, include
+                            # the relu module
                             num_outchannels_conv3x3 = num_inchannels[j]
                             block = nn.Sequential(
                                 nn.Conv2d(
@@ -322,6 +383,8 @@ class HighResolutionModule(nn.Module):
                                 nn.ReLU(True)
                             )
                             conv3x3s.append(block)
+                # basically put all these upsampling and downsampling conv
+                # blocks into an indexable 2D module list
                 fuse_layer.append(block)
             fuse_layers.append(nn.ModuleList(fuse_layer))
 
