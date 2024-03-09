@@ -1,4 +1,5 @@
 import torch.nn as nn
+from functools import partial
 
 BN_MOMENTUM = 0.1
 
@@ -46,6 +47,46 @@ class Bottleneck(nn.Module):
             residual = self.downsample(x)
         else:
             residual = x
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
+class BasicBlock(nn.Module):
+    """
+    A general conv block which can downsample the image if the stride is larger
+    than one. A residual block is also present to add the data from the previous layer
+    to the output
+    """
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        conv = partial(nn.Conv2d(inplanes, planes, kernel_size=3,
+                                 stride=stride, padding=1, bias=False))
+        bn = partial(nn.BatchNorm2d(inplace=True))
+        self.conv1 = conv
+        self.bn1 = bn
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv
+        self.bn2 = bn
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
 
         out += residual
         out = self.relu(out)
