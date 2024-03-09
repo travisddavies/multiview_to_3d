@@ -4,7 +4,7 @@ import numpy as np
 import torch.functional as F
 from functools import partial
 
-from .blocks import Bottleneck
+from .blocks import Bottleneck, BasicBlock
 
 BN_MOMENTUM = 0.1
 blocks_dict = {
@@ -91,12 +91,15 @@ class PoseHighResolutionNet(nn.Module):
         transition_layers = []
         for i in range(num_branches_cur):
             if i < num_branches_pre:
+                # Given that the number of channels in and the number of
+                # channels out are not equal, we will make a conv block as we
+                # have for previous layers
                 if num_channels_cur_layer[i] != num_channels_pre_layer[i]:
                     block = nn.Sequential(
                         nn.Conv2d(
                             num_channels_pre_layer[i],
                             num_channels_cur_layer[i],
-                            3, 1, 1, bias=False
+                            kernel_size=3, stride=1, padding=1, bias=False
                         ),
                         nn.BatchNorm2d(num_channels_cur_layer[i]),
                         nn.ReLU(inplace=True)
@@ -106,13 +109,26 @@ class PoseHighResolutionNet(nn.Module):
                     transition_layers.append(None)
             else:
                 conv3x3s = []
+                # If i is greater than num_branches_pre, then we will
+                # then iterate from 0 to the equivalent of the difference
+                # between i and num_branches_pre
                 for j in range(i+1-num_branches_pre):
+                    # These are going to connect to the last block from the
+                    # previous layer, so we will take the number of channels
+                    # of that block as the inchannels
                     inchannels = num_branches_pre[-1]
+                    # The number of outchannels will equal the same as
+                    # inchannels for every convblock except for the last one,
+                    # which will equal the current outchannel that j is sitting
+                    # on
                     outchannels = num_channels_cur_layer[i] \
                         if j == i - num_channels_pre_layer else inchannels
+                    # We will be downsizing the image by increasing the stride
+                    # to 2, so it will progressively downsample the image
                     conv = nn.Sequential(
                         nn.Conv2d(
-                            inchannels, outchannels, 3, 2, 1, bias=False
+                            inchannels, outchannels,
+                            kernel_size=3, stride=2, padding=1, bias=False
                         ),
                         nn.BatchNorm2d(outchannels),
                         nn.ReLU(inplace=True)
