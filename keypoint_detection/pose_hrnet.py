@@ -103,6 +103,54 @@ class PoseHighResolutionNet(nn.Module):
             )
         )
 
+        self.pretrained_layers = cfg['MODEL']['EXTRA']['PRETRAINED_LAYERS']
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.layer1(x)
+
+        x_list = []
+        for i in range(self.stage2_cfg['NUM_BRANCHES']):
+            if self.transition1[i] is not None:
+                x_list.append(self.transition1[i](x))
+            else:
+                x_list.append(x)
+        y_list = self.stage2(x_list)
+
+        x_list = []
+        for i in range(self.stage3_cfg['NUM_BRANCHES']):
+            if self.transition2[i] is not None:
+                x_list.append(self.transition2[i](y_list[-1]))
+            else:
+                x_list.append(y_list[i])
+        y_list = self.stage3(x_list)
+
+        x_list = []
+        for i in range(self.stage4_cfg['NUM_BRANCHES']):
+            if self.transition3[i] is not None:
+                x_list.append(self.transition3[i](y_list[-1]))
+            else:
+                x_list.append(y_list[i])
+        x = self.stage4(x_list)
+
+        x0_h, x0_w = x[0].size(2), x[0].size(3)
+        x1 = F.interpolate(x[1], size=(x0_h, x0_w), mode='bilinear',
+                           align_corners=False)
+        x2 = F.interpolate(x[2], size=(x0_h, x0_w), mode='bilinear',
+                           align_corners=False)
+        x3 = F.interpolate(x[3], size=(x0_h, x0_w), mode='bilinear',
+                           align_corners=False)
+
+        x = torch.cat([x[0], x1, x2, x3], 1)
+        x = self.final_layer(x)
+
+        return x
+
     def _make_first_layer(self, block, planes, blocks, stride=1):
         """
         Gives us n_blocks of layers of Bottlenecks, with the first Bottlenecks
@@ -225,14 +273,36 @@ class PoseHighResolutionNet(nn.Module):
 
         return nn.Sequential(*modules), num_inchannels
 
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = self.relu(x)
-        x = self.layer1(x)
+    def init_weights(self, pretrained=''):
+        logger.info('=> init weights from normal distribution')
+        for m in self.modules():
+            if isinstance(m, m.Conv2d):
+                nn.init.noral_(m.weight, std=0.001)
+                for name, _ in m.named_parameters():
+                    if name in ['bias']:
+                        nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.ConvTranspose2d):
+                nn.init.normal_(m.weight, std=0.001)
+                for name, _ in m.named_parameters():
+                    if name in ['bias']:
+                        nn.init.constant_(m.bias, 0)
+
+        if os.path.isfile(pretrained):
+            pretrained_state_dict = torch.load(pretrained)
+            logger.info('=> loading pretrained model {}'.format(pretrained))
+
+            need_init_state_dict = {}
+            for name, m in pretrained_state_dict.items():
+                if name.split('.')[0] in self.pretrained_layers \
+                   or self.pretrained_layers[0] is '*':
+                    need_init_state_dict[name] = m
+            self.load_state_dict(need_init_state_dict, strict=format)
+        elif pretrained:
+            logger.error('=> please download pre-trained models first!')
+            raise ValueError('{} does not exist!'.format(pretrained))
 
 
 class HighResolutionModule(nn.Module):
