@@ -12,7 +12,7 @@ def load_detector(device='cpu'):
     this_dir = os.path.dirname(__file__)
     cfg.merge_from_file(this_dir + '/w32_256x256.yaml')
 
-    # pretrain state_dict by us
+    # pretrain state_dict by###
     state_dict = torch.load(this_dir + '/model_best.pth', map_location=device)
 
     model = get_pose_net(cfg, is_train=False)
@@ -35,10 +35,13 @@ def postprocess(output, device=None):
         device = output.device
 
     # mask
+    # The last two channels show the mask
     pred_mask = F.softmax(output[:, -2:, :, :], dim=1)[:, [1], :, :]
+    # Increase the size of the output
     pred_mask = F.interpolate(pred_mask, size=256).to(device)
 
     # keypoints
+    # The rest of the channels are for the keypoints
     pred_kpts = output[:, :-2, :, :]
     pred_kpts = pred_kpts.reshape(batch_size, num_kpts, -1)
 

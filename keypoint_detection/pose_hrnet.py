@@ -138,6 +138,10 @@ class PoseHighResolutionNet(nn.Module):
                 x_list.append(y_list[i])
         x = self.stage4(x_list)
 
+        # This seems to get three different resolution images and then does
+        # some interpolation to make them equal the same size as the largest
+        # resolution map, which is then concatenated together and fed into the
+        # final layer to get the mask
         x0_h, x0_w = x[0].size(2), x[0].size(3)
         x1 = F.interpolate(x[1], size=(x0_h, x0_w), mode='bilinear',
                            align_corners=False)
@@ -269,7 +273,7 @@ class PoseHighResolutionNet(nn.Module):
                 )
             )
 
-            num_inchannels = modules[-1].get_num_ichannels()
+            num_inchannels = modules[-1].get_num_inchannels()
 
         return nn.Sequential(*modules), num_inchannels
 
@@ -468,3 +472,6 @@ class HighResolutionModule(nn.Module):
             fuse_layers.append(nn.ModuleList(fuse_layer))
 
         return nn.ModuleList(fuse_layers)
+
+    def get_num_inchannels(self):
+        return self.num_inchannels

@@ -73,6 +73,7 @@ def main(args):
         p_est, b_est = regressor(kpts_in, mask_in)
         pose, tran, bone = regressor.postprocess(p_est, b_est)
 
+    # Ignore any values where the probability is less than 0.3
     ignored = pred_kpts[:, :, 2] < 0.3
     opt_kpts = pred_kpts.clone()
     opt_kpts[ignored] = 0
