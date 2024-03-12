@@ -39,7 +39,8 @@ def main(args):
 
     if args.use_mask:
         if device == "cpu":
-            print("Warning: using mask during optimisation without GPU acceleration is very slow!")
+            print("Warning: using mask during optimisation without GPU \
+                  acceleration is very slow!")
         silhouette_renderer = base_renderer(size=256, focal=2167,
                                             device=device)
         optimiser = OptimiseSV(num_iters=100, prior_weight=1, mask_weight=1,
