@@ -7,6 +7,7 @@ class bird_model:
     '''
     Implementation of skined linear bird model
     '''
+
     def __init__(self, device=torch.device('cpu'), mesh='bird_eccv.json'):
 
         self.device = device
@@ -35,3 +36,27 @@ class bird_model:
         self.b_m = prior['b_m'].to(device)
         self.p_cov = prior['p_cov'].to(device)
         self.b_cov = prior['b_cov'].to(device)
+
+    def __call__(self, global_pose, body_pose, bone_length, scale=1, pose2rot=True):
+        batch_size = global_pose.shape[0]
+        V = self.V.repeat([batch_size, 1, 1]) * scale
+
+        # concatenate bone and pose
+        bone = torch.cat([torch.ones([batch_size,1]).to(self.device), bone_length], dim=1)
+        pose = torch.cat([global_pose, body_pose], dim=1)
+
+        # LBS
+        verts = self.LBS(V, pose, bone, scale, to_rotmats=pose2rot)
+
+        # Calculate 3d keypoint from new vertices resulted from pose
+        keypoints = []
+        for i in range(verts.shape[0]):
+            kpt = torch.matmul(self.vert2kpt, verts[i])
+            keypoints.append(kpt)
+        keypoints = torch.stack(keypoints)
+
+        # Final output after articulation
+        output = {'vertices': verts,
+                  'keypoints': keypoints}
+
+        return output
